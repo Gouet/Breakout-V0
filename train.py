@@ -12,7 +12,7 @@ import env_wrapper
 import rollout
 
 #Hyper params:
-TRAIN_MODE = False
+TRAIN_MODE = True
 NUM_ACTION = 4
 ENV_GAME_NAME = 'Breakout-v0'
 VALUE_FACTOR = 1.0
@@ -26,10 +26,12 @@ BATCH_SIZE = 32
 GAMMA = 0.99
 LAM = 0.95
 EPOCH = 4
-ACTORS = 1
+ACTORS = 8
 FINAL_STEP = 10e6
+print(FINAL_STEP)
 STATE_SHAPE = [84, 84, 4]
 
+print(tf.__version__)
 try:  
     os.mkdir('./saved')
 except OSError:  
@@ -43,7 +45,19 @@ def _process_obs(obs):
     return obs[None, :, :, None] / 256 # Shape (84, 84, 1)
     #return np.reshape(obs, (1, 6, 1))
 
-envs = env_wrapper.EnvWrapper(ENV_GAME_NAME, ACTORS, update_obs=_process_obs)#gym.make('Breakout-v0')
+def _clip_reward(reward):
+    return np.clip(reward, -1.0, 1.0)
+
+def _end_episode(episode, data, max_step, episode_step):
+    global_step.assign_add(1)
+    print('Episode: ', episode, ' entropy: ', data[0] / float(episode_step), ' reward', data[1], ' global_step: ', max_step, ' episode_step: ', episode_step)
+    with writer.as_default(), tf.contrib.summary.always_record_summaries():
+        tf.contrib.summary.scalar("entropy", data[0] / float(episode_step))
+        tf.contrib.summary.scalar("reward", data[1])
+        tf.contrib.summary.scalar("episode_step", episode_step)
+        
+
+envs = env_wrapper.EnvWrapper(ENV_GAME_NAME, ACTORS, update_obs=_process_obs, update_reward=_clip_reward, end_episode=_end_episode)#gym.make('Breakout-v0')
 rollouts = [rollout.Rollout() for _ in range(ACTORS)]
 
 global ep_ave_max_q_value
@@ -93,8 +107,8 @@ def plti(im, h=8, **kwargs):
 
 global global_step
 global_step, writer = create_tensorboard()
-actorCritic = ppo.ActorCritic(NUM_ACTION, LR, EPSILON, FINAL_STEP)
-actorCriticOld = ppo.ActorCritic(NUM_ACTION, LR, EPSILON, FINAL_STEP)
+actorCritic = ppo.ActorCritic(NUM_ACTION, LR, EPSILON, FINAL_STEP, STATE_SHAPE)
+actorCriticOld = ppo.ActorCritic(NUM_ACTION, LR, EPSILON, FINAL_STEP, STATE_SHAPE)
 
 try:
     actorCriticOld.load()
@@ -135,22 +149,12 @@ def train(next_value):
     log_probs = np.array(log_probs)
     states = np.array(states)
 
-    print('values', values.shape)
-    print('rewards', rewards.shape)
-    print('masks', masks.shape)
-    print('actions', actions.shape)
-    print('log_probs', log_probs.shape)
-    print('states', states.shape)
-
-    #_, next_value = actorCritic.model.predict(stack)
     returns = ppo.compute_returns(rewards, next_value, masks, GAMMA)
 
     advantage = ppo.compute_gae(rewards, values, next_value, masks, GAMMA, LAM)
 
     advantage = (advantage - np.mean(advantage)) / np.std(advantage)
 
-    print('advantage', advantage.shape)
-    print('returns', returns.shape)
 
     indices = np.random.permutation(range(TIME_HORIZON))
     states = states[:, indices]
@@ -160,13 +164,8 @@ def train(next_value):
     advantage = advantage[:, indices]
     masks = masks[:, indices]
 
-    print('states.shape: BEFORE TRAIN', states.shape)
     loss = ppo.update(actorCritic, TIME_HORIZON, EPOCH, BATCH_SIZE, states, actions, log_probs, returns, advantage, GRAD_CLIP, VALUE_FACTOR, ENTROPY_FACTOR, STATE_SHAPE)
     actorCriticOld.hard_copy(actorCritic.model.trainable_variables)
-
-    print('loss:', loss)
-
-    actorCritic.save()
 
     for rollout in rollouts:
         rollout.flush()
@@ -174,77 +173,64 @@ def train(next_value):
     pass
 
 t = 0
-for episode in range(10000):
-    global_step.assign_add(1)
+batch_obs = envs.reset()
+batch_stack = []
+update_episode = 0
 
-    batch_obs = envs.reset()
+for obs in batch_obs:
+    stack = np.concatenate([obs, obs], axis=-1)
+    stack = np.concatenate([stack, obs], axis=-1)
+    stack = np.concatenate([stack, obs], axis=-1)
+    batch_stack.append(stack)
 
-    j = 0
-    ep_ave_max_q_value = 0
-    total_reward = 0
-
-    entropy = 0
-
-    batch_stack =[]
-    for obs in batch_obs:
-        stack = np.concatenate([obs, obs], axis=-1)
-        stack = np.concatenate([stack, obs], axis=-1)
-        stack = np.concatenate([stack, obs], axis=-1)
-        batch_stack.append(stack)
-
-    while not envs.done():
-        #batch_stack = batch_obs
-        if not TRAIN_MODE:
-            envs.render(0)
-
-        actions_t = []
-        dists_t = []
-        values_t = []
-        dist_cat_t = []
-        entropy_t = []
-
-        for stack in batch_stack:
-            dist, value = actorCriticOld.model.predict(stack)
-            distCat = tf.distributions.Categorical(probs=tf.nn.softmax(dist))
-            action = distCat.sample(1)[0]
-
-            entropy_t.append(distCat.entropy())
-            actions_t.append(action)
-            dists_t.append(dist)
-            dist_cat_t.append(distCat)
-            values_t.append(value)
-
-        obs2s_t, rewards_t, dones_t = envs.step(actions_t)
-        total_reward += np.mean(rewards_t)
-        entropy += np.mean(entropy_t)
-
-        if t > 0 and (t / ACTORS) % TIME_HORIZON == 0 and TRAIN_MODE:
-            next_values = np.reshape(values_t, [-1])
-            train(next_values)
-
-        if TRAIN_MODE:
-            for i, rollout in enumerate(rollouts):
-                log_prob = dist_cat_t[i].log_prob(actions_t[i])
-                rollout.add(batch_stack[i][0,:], actions_t[i][0], rewards_t[i], values_t[i][0][0], log_prob[0], 1 - dones_t[i])
-            #rollout.add(batch_stack[i][0,:], actions_t[i][0], rewards_t[i] / 10, values_t[i][0][0], log_prob[0], 1 - dones_t[i])
-
-        t += ACTORS
-        j += ACTORS
-
-
-        #batch_obs = obs2s_t
-        for i, stack in enumerate(batch_stack):
-            stack = stack[:,:,:,1:]
-            batch_stack[i] = np.concatenate([stack, obs2s_t[i]], axis=-1)
-
-        if LR_DECAY == 'linear':
-            actorCriticOld.decay_clip_param(opti_step)
-            actorCriticOld.decay_learning_rate(opti_step)
-
-    with writer.as_default(), tf.contrib.summary.always_record_summaries():
-        tf.contrib.summary.scalar("entropy", entropy / float(j))
-        tf.contrib.summary.scalar("reward", total_reward)
+while True:
+    #batch_stack = batch_obs
+    if not TRAIN_MODE:
+        envs.render(0)
     
-    print('TOTAL REWARD: ', total_reward, ' ENTROPY: ', entropy / float(j))
+    actions_t = []
+    dists_t = []
+    values_t = []
+    dist_cat_t = []
+    entropy_t = []
 
-env.close()
+    for stack in batch_stack:
+        dist, value = actorCriticOld.model.predict(stack)
+        distCat = tf.distributions.Categorical(probs=tf.nn.softmax(dist))
+        action = distCat.sample(1)[0]
+        entropy_t.append(distCat.entropy())
+        actions_t.append(action)
+        dists_t.append(dist)
+        dist_cat_t.append(distCat)
+        values_t.append(value)
+
+    obs2s_t, rewards_t, dones_t = envs.step(actions_t)
+
+    for i in range(ACTORS):
+        data = envs.get_variables_at_index(i)
+        if len(data) < 2:
+            data = [0, 0]
+        envs.add_variables_at_index(i, [np.mean(entropy_t[i]) + data[0], rewards_t[i] + data[1]])
+
+    if t > 0 and (t / ACTORS) % TIME_HORIZON == 0 and TRAIN_MODE:
+        next_values = np.reshape(values_t, [-1])
+        train(next_values)
+
+        if update_episode % 50 == 0:
+            actorCritic.save()
+        update_episode += 1
+
+    if TRAIN_MODE:
+        for i, rollout in enumerate(rollouts):
+            log_prob = dist_cat_t[i].log_prob(actions_t[i])
+            rollout.add(batch_stack[i][0,:], actions_t[i][0], rewards_t[i], values_t[i][0][0], log_prob[0], 1 - dones_t[i])
+
+    t += ACTORS
+        
+    for i, stack in enumerate(batch_stack):
+        stack = stack[:,:,:,1:]
+        batch_stack[i] = np.concatenate([stack, obs2s_t[i]], axis=-1)
+
+    if LR_DECAY == 'linear':
+        actorCritic.decay_clip_param(t)
+        actorCritic.decay_learning_rate(t)

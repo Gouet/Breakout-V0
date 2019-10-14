@@ -112,12 +112,12 @@ def update(actorCritic, time_horizon, ppo_epochs, mini_batch_size, states, actio
     return tf.reduce_mean(loss_tab)
 
 class ActorCritic():
-    def __init__(self, num_action, lr, clip_param, final_step, filename='./saved/actor.h5'):
+    def __init__(self, num_action, lr, clip_param, final_step, state_shape, filename='./saved/actor.h5'):
         self.filename = filename
 
         w = tf.orthogonal_initializer(np.sqrt(2.0))
         #self.input = tf.keras.layers.Input(shape=(6,1))
-        self.input = tf.keras.layers.Input(shape=(84,84,4))
+        self.input = tf.keras.layers.Input(shape=state_shape)
 
         self.lr = tf.Variable(lr)
         self.initial_learning_rate_value = lr
