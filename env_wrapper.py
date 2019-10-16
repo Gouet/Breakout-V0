@@ -1,7 +1,44 @@
 import gym
 
+# from https://github.com/openai/baselines
+class EpisodicLifeEnv(gym.Wrapper):
+    def __init__(self, env):
+        """Make end-of-life == end-of-episode, but only reset on true game over.
+        Done by DeepMind for the DQN and co. since it helps value estimation.
+        """
+        gym.Wrapper.__init__(self, env)
+        self.lives = 0
+        self.was_real_done  = True
+
+    def step(self, action):
+        obs, reward, done, info = self.env.step(action)
+        self.was_real_done = done
+        # check current lives, make loss of life terminal,
+        # then update lives to handle bonus lives
+        lives = self.env.unwrapped.ale.lives()
+        if lives < self.lives and lives > 0:
+            # for Qbert sometimes we stay in lives == 0 condtion for a few frames
+            # so its important to keep lives > 0, so that we only reset once
+            # the environment advertises done.
+            done = True
+        self.lives = lives
+        return obs, reward, done, info
+
+    def reset(self, **kwargs):
+        """Reset only when lives are exhausted.
+        This way all states are still reachable even though lives are episodic,
+        and the learner need not know about any of this behind-the-scenes.
+        """
+        if self.was_real_done:
+            obs = self.env.reset(**kwargs)
+        else:
+            # no-op step to advance from terminal/lost life state
+            obs, _, _, _ = self.env.step(0)
+        self.lives = self.env.unwrapped.ale.lives()
+        return obs
+
 class EnvWrapper:
-    def __init__(self, gym_env, actors, update_obs=None, update_reward=None, end_episode=None):
+    def __init__(self, gym_env, actors, episodic_life_env=False, update_obs=None, update_reward=None, end_episode=None):
         self.envs = []
         self.variables = []
         self.update_obs = update_obs
@@ -11,7 +48,10 @@ class EnvWrapper:
         self.global_step = 0
         self.episode_step = []
         for _ in range(actors):
-            self.envs.append(gym.make(gym_env))
+            env = gym.make(gym_env)
+            if episodic_life_env == True:
+                env = EpisodicLifeEnv(env)
+            self.envs.append(env)
         for _ in range(actors):
             self.variables.append([])
             self.episode_step.append(0)
@@ -65,3 +105,5 @@ class EnvWrapper:
                 obs = self.update_obs(obs)
             batch_states.append(obs)
         return batch_states
+
+

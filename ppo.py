@@ -152,14 +152,14 @@ class ActorCritic():
 
     def decay_learning_rate(self, step):
         decay = 1.0 - (float(step) / self.final_learning_rate_step)
-        if decay < 0.0:
-            decay = 0.0
+        if decay < 0.1:
+            decay = 0.1
         self.lr.assign(decay * self.initial_learning_rate_value)
 
     def decay_clip_param(self, step):
         decay = 1.0 - (float(step) / self.final_clip_param_step)
-        if decay < 0.0:
-            decay = 0.0
+        if decay < 0.1:
+            decay = 0.1
         self.clip_param = (decay * self.initial_clip_param)
 
     def load(self):

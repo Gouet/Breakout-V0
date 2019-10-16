@@ -20,9 +20,9 @@ ENTROPY_FACTOR = 0.01
 EPSILON = 0.1
 LR = 2.5e-4
 LR_DECAY = 'linear'
-GRAD_CLIP = 0.5
+GRAD_CLIP = 0.5#0.5
 TIME_HORIZON = 128
-BATCH_SIZE = 32
+BATCH_SIZE = 32 #32
 GAMMA = 0.99
 LAM = 0.95
 EPOCH = 4
@@ -42,7 +42,7 @@ else:
 def _process_obs(obs):
     obs = cv2.cvtColor(obs, cv2.COLOR_RGB2GRAY)
     obs = cv2.resize(obs, (84, 84), interpolation=cv2.INTER_AREA)
-    return obs[None, :, :, None] / 256 # Shape (84, 84, 1)
+    return obs[None, :, :, None] / 255 # Shape (84, 84, 1)
     #return np.reshape(obs, (1, 6, 1))
 
 def _clip_reward(reward):
@@ -57,7 +57,7 @@ def _end_episode(episode, data, max_step, episode_step):
         tf.contrib.summary.scalar("episode_step", episode_step)
         
 
-envs = env_wrapper.EnvWrapper(ENV_GAME_NAME, ACTORS, update_obs=_process_obs, update_reward=_clip_reward, end_episode=_end_episode)#gym.make('Breakout-v0')
+envs = env_wrapper.EnvWrapper(ENV_GAME_NAME, ACTORS, episodic_life_env=True, update_obs=_process_obs, update_reward=_clip_reward, end_episode=_end_episode)#gym.make('Breakout-v0')
 rollouts = [rollout.Rollout() for _ in range(ACTORS)]
 
 global ep_ave_max_q_value
